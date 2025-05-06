@@ -16,12 +16,6 @@ Este programa em Python realiza a extração automática de informações espec�
 - Permite configurar CNPJs a serem ignorados.
 - Identifica guias de custas e boletos com múltiplas páginas.
 
-## 🗂 Estrutura de Pastas
-
-- `C:\alexandre\Input` — Pasta onde os PDFs devem ser colocados para processamento.
-- `C:\alexandre\Output` — PDFs processados são movidos para cá.
-- `C:\alexandre\Resultado` — Local onde a planilha Excel final será salva.
-
 > Essas pastas podem ser ajustadas conforme necessário na interface gráfica do programa.
 
 ## ⚙️ Tecnologias Utilizadas
@@ -41,6 +35,3 @@ Este programa em Python realiza a extração automática de informações espec�
 - [Poppler](http://blog.alivate.com.au/poppler-windows/) instalado:
   - Caminho padrão: `C:\Program Files\poppler\bin`
 - Instale as bibliotecas Python necessárias com:
-
-```bash
-pip install -r requirements.txt
