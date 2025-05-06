@@ -15,6 +15,21 @@ import tkinter as tk
 import glob  # Importe o módulo glob para listar arquivos PDF
 from openpyxl.styles import Alignment, PatternFill, Font
 import csv # Importe o módulo csv
+import tempfile  # Importe o módulo tempfile para pastas temporárias
+import shutil # Importe o módulo shutil para remover pastas
+
+# *** Configuração de Logging ***
+log_dir = os.path.join(os.environ['APPDATA'], 'PDF2EXCEL')
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+log_file_path = os.path.join(log_dir, 'PDF2EXCEL.log')
+
+logging.basicConfig(filename=log_file_path,
+                    level=logging.INFO, # ou logging.DEBUG para mais detalhes
+                    filemode='w', # 'w' para sobrescrever o arquivo a cada execução
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
+logging.info("Programa PDF2EXCEL iniciado.")
 
 # Definir o caminho do Poppler (apenas para a versão .exe)
 poppler_path = os.path.join(sys._MEIPASS, 'poppler', 'bin') if getattr(sys, 'frozen', False) else r"C:\Program Files\poppler\bin"
@@ -27,7 +42,7 @@ if getattr(sys, 'frozen', False) and not os.path.exists(poppler_path):
 pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
 # Desabilitar log no console/cmd (quase ignorado em .exe)
-logging.basicConfig(level=logging.CRITICAL)
+# logging.basicConfig(level=logging.CRITICAL) # Removido, agora usamos logging.INFO para arquivo
 
 # Centraliza o programa na tela
 def center_window(window):
@@ -41,10 +56,10 @@ def center_window(window):
     window.geometry(f'+{x}+{y}') # Removed fixed size and let window adapt to content
 
 # Define no path do windows o poppler
-def ocr_pdf(pdf_path):
+def ocr_pdf(pdf_path, temp_dir): # Adicionado temp_dir
     try:
         # Verifica a quantidade de páginas do PDF
-        images = convert_from_path(pdf_path, poppler_path=poppler_path)
+        images = convert_from_path(pdf_path, poppler_path=poppler_path, output_folder=temp_dir, paths_only=False, fmt='jpeg') # output_folder para pasta temporária
         num_pages = len(images)
 
         text = ""
@@ -54,7 +69,7 @@ def ocr_pdf(pdf_path):
             text += pytesseract.image_to_string(image, lang='por')
         return text, num_pages  # Retorna o texto e o número de páginas
     except Exception as e:
-        logging.exception("Erro ao processar OCR do PDF")
+        logging.exception(f"Erro ao processar OCR do PDF: {pdf_path}")
         return None, 0  # Retorna None para o texto e o número de páginas
 
 def extract_info(text):
@@ -128,6 +143,10 @@ def save_to_csv(result_file, ws):
 def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adicionado save_csv
     global arquivos_com_paginas_a_mais, arquivos_com_dados_incompletos, processing
 
+    # Limpa as listas de arquivos com divergências no início de cada processamento
+    arquivos_com_paginas_a_mais.clear()
+    arquivos_com_dados_incompletos.clear()
+
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -142,6 +161,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
             wb = openpyxl.load_workbook(result_file)
             ws = wb.active
         except Exception as e:
+            logging.exception(f"Erro ao abrir arquivo Excel existente: {result_file}")
             messagebox.showerror("Erro", f"Não foi possível abrir o arquivo Excel: {e}", icon="error")
             return
 
@@ -149,6 +169,9 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
     error_messages = []
     linhas_digitaveis_processadas = set()  # Usando um conjunto para rastrear linhas digitáveis processadas
     total_lines = 0  # Variável para controlar a numeração das linhas na coluna 'Nome do Titulo'
+
+    temp_dir_obj = tempfile.TemporaryDirectory() # Cria um diretório temporário
+    temp_dir = temp_dir_obj.name # Obtém o caminho do diretório temporário
 
     try:
         for pdf_path in input_files:
@@ -164,7 +187,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
             if not processing:  # Verifique se o processamento não foi cancelado
                 break
 
-            ocr_text, num_pages = ocr_pdf(pdf_path)  # Obtem o texto e o número de páginas
+            ocr_text, num_pages = ocr_pdf(pdf_path, temp_dir)  # Obtem o texto e o número de páginas, passa temp_dir
             if not processing:  # Check again after OCR for faster cancellation
                 break
 
@@ -182,6 +205,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                         cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                         cell.font = Font(color='000000')
                     error_messages.append(f"Arquivo {n_processo}: Nenhuma informação encontrada.")
+                    logging.warning(f"Arquivo {n_processo}: Nenhuma informação encontrada.")
 
                 # Guia de custas com CNPJ, mas sem linha digitável
                 elif info['tipo'] == 'guia_custas' and info['cnpj'] != 'N/A':
@@ -192,6 +216,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                         cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                         cell.font = Font(color='000000')
                     error_messages.append(f"Arquivo {n_processo}: CNPJ encontrado, mas sem linha digitável (Guia de Custas?).")
+                    logging.warning(f"Arquivo {n_processo}: CNPJ encontrado, mas sem linha digitável (Guia de Custas?).")
                 # Boletos Normais
                 elif info['cnpj'] == 'N/A': # CNPJ não encontrado ou é o CNPJ indesejado
                     arquivos_com_dados_incompletos.add(nome_sem_extensao)
@@ -222,6 +247,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                         cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                         cell.font = Font(color='000000')
                     error_messages.append(f"Arquivo {n_processo}: CNPJ não encontrado ou inválido.")
+                    logging.warning(f"Arquivo {n_processo}: CNPJ não encontrado ou inválido.")
 
 
                 # Boletos Normais COM CNPJ válido
@@ -256,6 +282,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                         if 'N/A' in [v for k, v in info.items() if k != 'cnpj']: # Check N/A in other fields except cnpj
                             error_messages.append(f"Arquivo {n_processo}: Dados inválidos ou ausentes (exceto CNPJ).")
                             arquivos_com_dados_incompletos.add(nome_sem_extensao)  # Adiciona à lista de arquivos com dados incompletos
+                            logging.warning(f"Arquivo {n_processo}: Dados inválidos ou ausentes (exceto CNPJ).")
 
                 # Ajusta a largura das colunas la no excel
                 for col in range(1, ws.max_column + 1):
@@ -266,6 +293,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                 # Se o arquivo tiver mais de uma página, adiciona-o à lista de arquivos com divergências
                 if num_pages > 1:
                     arquivos_com_paginas_a_mais.add(nome_sem_extensao)
+                    logging.warning(f"Arquivo {n_processo}: Possui mais de uma página.")
 
             else:
                 error_messages.append(f"Arquivo {n_processo}: Falha no processamento do OCR.")
@@ -275,6 +303,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                 for cell in ws[ws.max_row]:
                     cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                     cell.font = Font(color='000000')
+                logging.error(f"Arquivo {n_processo}: Falha no processamento do OCR.")
 
             if processing: # Only update progress bar if not cancelled
                 popup_progress_bar['value'] += 1
@@ -304,6 +333,7 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                 valor_boleto = float(valor_boleto.replace('.', '').replace(',', '.')) # Transforma para float removendo formatação indesejada.
             if valor_boleto and valor_boleto > 2000:
                 error_messages.append(f"Arquivo {ws.cell(row, 1).value}: Valor do boleto acima de R$ 2000. Verificar manual.")
+                logging.warning(f"Arquivo {ws.cell(row, 1).value}: Valor do boleto acima de R$ 2000. Verificar manual.")
                 for cell in ws[row]:
                     cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                     cell.font = Font(color='000000')
@@ -318,7 +348,9 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
                 if save_csv and not error_messages and not arquivos_com_paginas_a_mais and not arquivos_com_dados_incompletos: # salva CSV se não tiver erros e checkbox marcado
                     save_to_csv(result_file, ws)
             except Exception as e:
+                logging.exception(f"Erro ao salvar o arquivo Excel: {result_file}")
                 messagebox.showerror("Erro", f"Erro ao salvar o arquivo Excel: {e}", icon="error")
+        temp_dir_obj.cleanup() # Remove o diretório temporário e seu conteúdo
 
     # Converte os sets para listas antes de passar para a função de aviso
     arquivos_com_paginas_a_mais_list = list(arquivos_com_paginas_a_mais)
@@ -336,12 +368,18 @@ def process_pdfs(input_files, output_dir, result_file, custas, save_csv): # Adic
     return arquivos_com_paginas_a_mais, arquivos_com_dados_incompletos
 
 def select_input_files():
-    global input_files
+    global input_files, input_dir
     input_files = filedialog.askopenfilenames(
         filetypes=[("Arquivos PDF", "*.pdf")],
         title="Selecione os arquivos PDF"
     )
-    input_dir_label.config(text=f"{len(input_files)} arquivos selecionados")  # Mostra quantos arquivos foram selecionados
+    if input_files:
+        # Define input_dir para o diretório do primeiro arquivo selecionado, se houver arquivos selecionados
+        input_dir = os.path.dirname(input_files[0])
+        input_dir_label.config(text=f"{len(input_files)} arquivos selecionados")  # Mostra quantos arquivos foram selecionados
+    else:
+        input_dir = "" # Limpa input_dir se nenhum arquivo for selecionado
+        input_dir_label.config(text="PDF não selecionado")
 
 def select_result_file():
     global result_file
@@ -358,6 +396,7 @@ def process_pdfs_thread(input_files, output_dir, result_file, custas, save_csv_v
 
     # Verificação do tipo de 'output_dir' antes de usá-lo
     if not isinstance(output_dir, str):
+        logging.error(f"Caminho de saída inválido: {output_dir}")
         messagebox.showerror("Erro", "O caminho de saída (output_dir) não é uma string válida.", icon="error")
         processing = False
         start_button['state'] = NORMAL
@@ -380,8 +419,8 @@ def process_pdfs_thread(input_files, output_dir, result_file, custas, save_csv_v
         processing = False # Garante que o processing vai virar False após o loop
 
     except Exception as e:
-        messagebox.showerror("Erro", f"Erro durante o processamento: {e}", icon="error")
         logging.exception("Erro no thread de processamento")
+        messagebox.showerror("Erro", f"Erro durante o processamento: {e}", icon="error")
         processing = False # Garante que o processing vai virar False mesmo em caso de erro
     finally:
         processing = False
@@ -389,6 +428,7 @@ def process_pdfs_thread(input_files, output_dir, result_file, custas, save_csv_v
             popup.destroy()
         # **Reativa o botão de iniciar processamento após o término do thread**
         start_button['state'] = NORMAL
+        logging.info("Processamento de PDFs finalizado.")
 
 # Função para criar botões com estilo uniforme
 def create_button(parent, text, command, is_default=False, fg_color="#FF0000"): # Adicionado is_default and fg_color
@@ -517,18 +557,20 @@ def abrir_arquivos_pdf(arquivos):
 
 # Inicia o processo, se tiver rodando ignore a solicitação (era para o botão Enter dar start processing, mas ele desconfigura e de erros estranhos)
 def start_processing():
-    global processing, popup, popup_file_label, popup_progress_bar, custas_entry, input_files, result_file, save_csv_var  # Make sure save_csv_var is global
+    global processing, popup, popup_file_label, popup_progress_bar, custas_entry, input_files, result_file, save_csv_var, input_dir  # Make sure save_csv_var is global
 
     # **Se o botão estiver desabilitado, não faz nada**
     if start_button['state'] == DISABLED:
         return
 
     processing = True
+    logging.info("Iniciando o processamento...")
 
     # Check if 'input_files' is defined
     try:
         input_files
     except NameError:
+        logging.error("Arquivos PDF não selecionados.")
         messagebox.showerror("Erro", "Arquivos não Selecionados: Selecione os arquivos PDF.", icon="error")
         start_button['state'] = NORMAL
         return
@@ -537,6 +579,7 @@ def start_processing():
     try:
         result_file
     except NameError:
+        logging.error("Planilha de resultado não selecionada.")
         messagebox.showerror("Erro", "Planilha não Selecionada: Selecione a planilha de resultados.", icon="error")
         start_button['state'] = NORMAL
         return
@@ -552,8 +595,10 @@ def start_processing():
         # Verifica qual campo está vazio e monta a mensagem de erro
         if not input_files:
             error_message = "Arquivos PDF não selecionados. Selecione os arquivos."
+            logging.error("Arquivos PDF não selecionados.")
         else:
             error_message = "Campo 'Local do Resultado' vazio. Preencha o campo."
+            logging.error("Campo 'Local do Resultado' vazio.")
 
         error_label = Label(error_popup, text=error_message, font=("Segoe UI Bold", 10))
         error_label.pack(pady=10)
@@ -568,6 +613,7 @@ def start_processing():
 
     # **Verificação do Poppler movida para aqui, pois é realizada antes de iniciar o thread**
     if not os.path.exists(poppler_path):
+        logging.error(f"Pasta do Poppler não encontrada: {poppler_path}")
         messagebox.showerror("Erro", f"Pasta do Poppler não encontrada em: {poppler_path}. O programa não poderá funcionar corretamente", icon="error")
         # **Reativa o botão**
         start_button['state'] = NORMAL
@@ -575,6 +621,7 @@ def start_processing():
 
     custas = custas_entry.get()
     if not re.match(r'^[0-9\.\:\/\\]{1,5}$', custas):  # Permite de 1 a 5 caracteres
+        logging.error(f"Valor de custas inválido: {custas}")
         messagebox.showerror("Erro", "Digite um valor válido para as custas (apenas números, '.', ':', '/', '\\) com até 5 caracteres.", icon="error")
         # **Reativa o botão**
         start_button['state'] = NORMAL
@@ -603,12 +650,11 @@ def start_processing():
                            pady=5)
     cancel_button.pack(pady=10)
     center_window(popup)
-    # Correção aqui: output_dir precisa ser uma string válida (um caminho de diretório)
-    # Certifique-se de que 'input_dir' está definido e é uma string
-    output_dir = input_dir_label.cget("text")  # Ou qualquer diretório que você queira usar
-    if not output_dir or output_dir == "Nenhum arquivo selecionado":
-        output_dir = os.getcwd()  # Use o diretório atual como padrão
-        messagebox.showinfo("Informação", "Pasta de saída não definida. Usando o diretório atual.", icon="warning")
+
+    # Use input_dir para output_dir, se input_dir estiver definido, senão use o diretório atual
+    output_dir = input_dir if input_dir else os.getcwd()
+    logging.info(f"Pasta de saída para arquivos temporários: {output_dir}")
+
 
     save_csv = save_csv_var.get() # Get checkbox value here
     thread = Thread(target=process_pdfs_thread, args=(input_files, output_dir, result_file, custas, save_csv_var)) # Pass save_csv_var
@@ -618,6 +664,7 @@ def cancel_processing():
     global processing, popup
 
     processing = False # Set processing to false immediately
+    logging.info("Processamento cancelado pelo usuário.")
 
     if popup and popup.winfo_exists(): # Check if popup exists and is not destroyed
         popup.destroy() # Destroy the processing popup
@@ -631,13 +678,44 @@ def toggle_csv_save():
 def create_rounded_button(parent, text, command, width=100, height=50):
     canvas = Canvas(parent, width=width, height=height, bd=0, highlightthickness=0, relief='ridge')
     canvas.create_oval(5, 5, width-5, height-5, outline="#0000FF", fill="#0000FF")
-    canvas.create_text(width/2, height/2, text=text, fill="#FFFFFF", font=("Segoe UI Bold", 10))  # centralizado
+    text_x = width / 2 if width > 0 else 0 # Ensure width is positive
+    text_y = height / 2 if height > 0 else 0 # Ensure height is positive
+    canvas.create_text(text_x, text_y, text=text, fill="#FFFFFF", font=("Segoe UI Bold", 10))  # centralizado
     canvas.bind("<Button-1>", lambda event: command())
     return canvas
 
+# Função para abrir o arquivo de log
+def open_log_file():
+    try:
+        webbrowser.open_new_tab(f"file://{log_file_path}")
+    except Exception as e:
+        messagebox.showerror("Erro", f"Não foi possível abrir o arquivo de log: {e}", icon="error")
+
+# Função para deletar o arquivo de log
+def delete_log_file():
+    try:
+        # Close the log file handler before deleting
+        logging.shutdown()
+        # Try to delete the log file
+        os.remove(log_file_path)
+        # Reconfigure logging to write to the same file
+        logging.basicConfig(filename=log_file_path,
+                            level=logging.INFO,
+                            filemode='w',
+                            format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.info("Arquivo de log deletado pelo usuário.")
+        messagebox.showinfo("Sucesso", "Arquivo de log deletado com sucesso.", icon="info")
+    except FileNotFoundError:
+        messagebox.showerror("Erro", "Arquivo de log não encontrado para deletar.", icon="error")
+    except PermissionError:
+        messagebox.showerror("Erro", "Não foi possível deletar o arquivo de log. Ele pode estar em uso ou você não tem permissão.", icon="error")
+    except Exception as e:
+        messagebox.showerror("Erro", f"Erro ao deletar o arquivo de log: {e}", icon="error")
+
+
 # Janela principal do programa
 root = Tk()
-root.title("Extrator de Dados Do Boleto (1.3.0a)")
+root.title("Extrator de Dados Do Boleto (1.3.5a)")
 font_style = font.Font(family="Segoe UI Bold", size=15)
 root.option_add("*Font", font_style)
 root.resizable(False, False) # Impede redimensionar
@@ -679,7 +757,13 @@ custas_entry.bind("<KeyRelease>", limit_custas_entry)
 
 
 # **Botão de Iniciar processamento**
-start_button = Button(root, text="Iniciar Processamento", command=start_processing)
+start_button = Button(root, text="             Iniciar Processamento             ", command=start_processing,
+                           font=("Segoe UI Bold", 15),
+                           bg="#4CAF50",  # Verde
+                           fg="white",
+                           relief=FLAT,
+                           padx=10,
+                           pady=5)
 start_button.pack(pady=10)
 
 # Botão de Informação
@@ -688,20 +772,64 @@ def show_info():
     info_popup.title("Informação")
     info_popup.transient(root)
     info_popup.grab_set()
-    info_popup.resizable(False, False) # Impede redimensionar
-    version_label = Label(info_popup, text="1.3.0a - by Elias", font=("Segoe UI Bold", 10), bg=info_popup.cget("bg"), fg="#00FF00")
-    pix_label = Label(info_popup, text="Pix de Apoio: eliasgkersten@gmail.com", font=("Segoe UI Bold", 10), bg=info_popup.cget("bg"), fg="#00FF00")
+    info_popup.resizable(False, False)  # Impede redimensionar
+
+    version_label = Label(info_popup, text="1.3.5a - by Elias", font=("Segoe UI Bold", 10), bg=info_popup.cget("bg"), fg="#002b00")
+    pix_label = Label(info_popup, text="Chamado via mensagem Pix: eliasgkersten@gmail.com", font=("Segoe UI Bold", 10), bg=info_popup.cget("bg"), fg="#002b00")
     version_label.pack(pady=10)
     pix_label.pack(pady=5)
-    # Cria o botão "Sair" normal
-    exit_button = create_button(info_popup, "Sair", info_popup.destroy, is_default=True) # Exit is default
-    exit_button.pack(pady=10)
+
+    button_frame = Frame(info_popup)
+    button_frame.pack(pady=10)
+
+    # Botão Debug (verde)
+    debug_button = Button(
+        button_frame,
+        text="Debug",
+        command=open_log_file,
+        font=("Segoe UI Bold", 10),
+        bg="#4CAF50",  # Verde
+        fg="white",
+        relief=FLAT,
+        padx=10,
+        pady=5
+    )
+    debug_button.pack(side=LEFT, padx=5)
+
+    # Botão C Debug (azul)
+    c_debug_button = Button(
+        button_frame,
+        text="🗑️Debug",
+        command=delete_log_file,
+        font=("Segoe UI Bold", 10),
+        bg="#2196F3",  # azul
+        fg="white",
+        relief=FLAT,
+        padx=10,
+        pady=5
+    )
+    c_debug_button.pack(side=LEFT, padx=5)
+
+    # Botão Sair (vermelho)
+    exit_button = Button(
+        button_frame,
+        text="Sair",
+        command=info_popup.destroy,
+        font=("Segoe UI Bold", 10),
+        bg="#F44336",  # vermelho
+        fg="white",
+        relief=FLAT,
+        padx=10,
+        pady=5
+    )
+    exit_button.pack(side=LEFT, padx=5)
+
     center_window(info_popup)
 
 # **Criando o botão redondo de informação**
-show_info_button = create_rounded_button(root, "i", show_info, width=25, height=25)
+show_info_button = create_rounded_button(root, "i", show_info, width=30, height=30) # Slightly increased size
 show_info_button.place(relx=1.0, rely=1.0, anchor="se")  # Coloca na posição SE
-show_info_button = create_rounded_button(root, "i", show_info, width=50, height=50)
+show_info_button = create_rounded_button(root, "i", show_info, width=50, height=50) # Keep the larger one as is
 
 center_window(root)
 
@@ -710,6 +838,7 @@ root.bind("<Return>", lambda event: start_processing() if not root.grab_current(
 
 # Inicialize a variável processing como False antes de qualquer função que a use.
 processing = False
+input_dir = "" # Inicializa input_dir globalmente
 
 # **Parte para esconder a janela do CMD**
 if getattr(sys, 'frozen', False):
