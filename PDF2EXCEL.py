@@ -663,15 +663,13 @@ def cancel_processing():
 def toggle_csv_save():
     save_csv_var.set(not save_csv_var.get())
 
-# Função para criar botões arredondados (versão original para o botão 'i')
-def create_rounded_button(parent, text, command, width=30, height=30, bg_color="#007bff", text_color="#FFFFFF"):
+# Função para criar botões arredondados (AGORA COM O ESTILO NOVO)
+def create_rounded_button(parent, text, command, width=20, height=20):
     canvas = Canvas(parent, width=width, height=height, bd=0, highlightthickness=0, relief='ridge', bg=parent.cget("bg"))
-    # Desenha o círculo/oval
-    # As coordenadas são (x1, y1, x2, y2) para o retângulo que circunscreve o oval
-    # Adiciona uma pequena margem para a borda não ser cortada
-    oval_id = canvas.create_oval(2, 2, width-2, height-2, outline=bg_color, fill=bg_color)
-    # Adiciona o texto no centro
-    text_id = canvas.create_text(width/2, height/2, text=text, fill=text_color, font=("Segoe UI Bold", int(height/2.5)))
+    # Desenha o círculo azul (hardcoded para o estilo desejado)
+    canvas.create_oval(1, 1, width-2, height-2, outline="#0000FF", fill="#0000FF")
+    # Adiciona o texto branco no centro (hardcoded para o estilo desejado)
+    canvas.create_text(width/2, height/2, text=text, fill="#FFFFFF", font=("Segoe UI Bold", int(height/2)))
     canvas.bind("<Button-1>", lambda event: command())
     return canvas
 
@@ -861,7 +859,7 @@ def show_info():
     debug_button.pack(side=LEFT, padx=5)
 
     # Botão C Debug (azul)
-    c_debug_button = Button(button_frame, text="🗑️Excluir Debug", command=delete_log_file, font=("Segoe UI Bold", 10), bg="#2196F3", fg="white", relief=FLAT, padx=10, pady=5)
+    c_debug_button = Button(button_frame, text="🗑️Excluir Debug", command=delete_log_file, font=("Segoe UI Bold", 10), bg="#F32121", fg="white", relief=FLAT, padx=10, pady=5)
     c_debug_button.pack(side=LEFT, padx=5)
 
     # Botão Configurações Filtro CNPJ (ícone de engrenagem)
@@ -869,14 +867,14 @@ def show_info():
     config_button.pack(side=LEFT, padx=5)
 
     # Botão Sair (vermelho)
-    exit_button = Button(button_frame, text="Sair", command=info_popup.destroy, font=("Segoe UI Bold", 10), bg="#F44336", fg="white", relief=FLAT, padx=10, pady=5)
+    exit_button = Button(button_frame, text="Sair", command=info_popup.destroy, font=("Segoe UI Bold", 10), bg="#000000", fg="white", relief=FLAT, padx=10, pady=5)
     exit_button.pack(side=LEFT, padx=5)
 
     center_window(info_popup)
 
 
-# Botão de Informação "i" (estilo original azul redondo)
-show_info_button_canvas = create_rounded_button(root, "i", show_info, width=30, height=30, bg_color="#007bff", text_color="#FFFFFF")
+# Botão de Informação "i" (estilo NOVO azul redondo, sem passar as cores explicitamente aqui)
+show_info_button_canvas = create_rounded_button(root, "i", show_info, width=20, height=20)
 # Posicionamento do botão de informação no canto inferior direito
 show_info_button_canvas.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se") # x e y negativos para dar uma margem da borda
 
