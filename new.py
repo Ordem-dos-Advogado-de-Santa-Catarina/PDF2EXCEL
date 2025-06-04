@@ -3,7 +3,7 @@ import subprocess
 import sys
 import re
 from tkinter import *
-from tkinter import filedialog, messagebox, ttk, font, scrolledtext # Importar scrolledtext e ttk
+from tkinter import filedialog, messagebox, ttk, font, scrolledtext
 from pdf2image import convert_from_path
 import pytesseract
 import openpyxl
@@ -17,6 +17,7 @@ from openpyxl.styles import Alignment, PatternFill, Font
 import csv
 import tempfile
 import shutil
+from PIL import Image, ImageTk # Necessário para carregar e exibir imagens .ico
 
 # *** Configuração de Logging ***
 log_dir = os.path.join(os.environ['APPDATA'], 'PDF2EXCEL')
@@ -174,10 +175,14 @@ def extract_info(text):
         }
 
 # Funções globais auxiliares que ainda podem ser chamadas.
-def create_rounded_button(parent, text, command, width=20, height=20):
-    # Definindo o background do canvas para ser o mesmo da janela principal (root)
-    canvas = Canvas(parent, width=width, height=height, bd=0, highlightthickness=0, relief='ridge', bg=parent.cget("bg"))
-    canvas.create_oval(1, 1, width-2, height-2, outline="#0000FF", fill="#0000FF") # Cor azul para o "i"
+def create_rounded_button(parent, text, command, width=20, height=20, bg_color=None):
+    # Usa bg_color se fornecido, caso contrário, fallback para o bg do parent
+    # Definindo a cor de fundo do Canvas para a cor do tema da interface
+    canvas_bg = bg_color if bg_color else parent.cget("bg")
+    canvas = Canvas(parent, width=width, height=height, bd=0, highlightthickness=0, relief='ridge', bg=canvas_bg)
+    # Desenha o círculo azul (hardcoded para o estilo desejado)
+    canvas.create_oval(1, 1, width-2, height-2, outline="#0000FF", fill="#0000FF")
+    # Adiciona o texto branco no centro (hardcoded para o estilo desejado)
     canvas.create_text(width/2, height/2, text=text, fill="#FFFFFF", font=("Segoe UI Bold", int(height/2)))
     canvas.bind("<Button-1>", lambda event: command())
     return canvas
@@ -190,6 +195,16 @@ class PDF2EXCEL:
         self.root.resizable(False, False) # Interface não redimensionável
         self.root.minsize(700, 50)
         self.root.config(bg="#f0f0f0") # Define uma cor de fundo consistente para a janela principal
+
+        # Tenta carregar e definir o ícone da janela principal
+        self.icon_image = None
+        try:
+            self.icon_image = ImageTk.PhotoImage(Image.open("correios_icon.ico"))
+            self.root.iconphoto(True, self.icon_image) # Define o ícone para a janela principal e popups futuros
+        except FileNotFoundError:
+            logger.warning("Arquivo de ícone 'correios_icon.ico' não encontrado.")
+        except Exception as e:
+            logger.error(f"Erro ao carregar o ícone: {e}")
 
         # Estilo de fonte e tema
         font_style = font.Font(family="Segoe UI", size=10)
@@ -219,7 +234,7 @@ class PDF2EXCEL:
         self.total_pages_to_process = 0
         self.processed_pages_count = 0
 
-        main_frame = ttk.Frame(self.root, padding=15)
+        main_frame = ttk.Frame(self.root, padding=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
         # --- Arquivos dos Boletos em PDF ---
@@ -263,17 +278,18 @@ class PDF2EXCEL:
         # --- Log de Processamento ---
         # Frame individual para o log, conforme solicitado.
         log_frame = ttk.LabelFrame(main_frame, text="Log de Processamento", padding="10")
-        # log_frame.pack(fill=tk.BOTH, expand=True, pady=5) # Antigo: expandia verticalmente
-        log_frame.pack(fill=tk.X, expand=False, pady=5) # Novo: não expande verticalmente, mantendo a altura fixa
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
         # Diminui o tamanho da janela de log (altura)
         self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True)
-
+        
         self.log_text.tag_config("INFO", foreground="black")
         self.log_text.tag_config("WARNING", foreground="orange")
         self.log_text.tag_config("ERROR", foreground="red")
+        self.log_text.tag_config("CRITICAL_ERROR", foreground="red", font=('TkDefaultFont', 9, 'bold'))
         self.log_text.tag_config("SUCCESS", foreground="green")
+        self.log_text.tag_config("DEBUG", foreground="gray")
         self.log_handler = TextLogHandler(self.log_text)
         logger.addHandler(self.log_handler)
 
@@ -290,13 +306,14 @@ class PDF2EXCEL:
 
         # Botão iniciar/cancelar processamento (agora acima do status label)
         self.process_button = ttk.Button(action_frame, text="Iniciar Processamento", command=self.start_processing, style="Process.TButton")
-        self.process_button.pack(pady=5)
+        self.process_button.pack(pady=7)
 
-        # Texto de execução atual (agora abaixo do botão de processamento)
+        # Texto de execução atual
         self.status_label = ttk.Label(action_frame, text="Aguardando configuração...")
         self.status_label.pack(fill=tk.X, pady=5)
 
-        # Botão 'i' (intacto, no canto inferior direito)
+        # Botão de Informação "i" (estilo NOVO azul redondo)
+        # Passa self.theme_background_color para a função create_rounded_button
         show_info_button_canvas = create_rounded_button(root, "i", self.show_info, width=20, height=20, bg_color=self.theme_background_color)
         # Posicionamento do botão de informação no canto inferior direito
         show_info_button_canvas.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se") # x e y negativos para dar uma margem da borda
@@ -734,6 +751,9 @@ class PDF2EXCEL:
         popup_div.transient(self.root)
         popup_div.grab_set()
         popup_div.resizable(False, False)
+        # Adiciona o ícone ao popup
+        if self.icon_image:
+            popup_div.iconphoto(True, self.icon_image)
         
         if no_data:
             label = Label(popup_div, text="Processamento concluído! Nenhum dado extraído.", font=("Segoe UI Bold", 10), fg="red")
@@ -809,6 +829,9 @@ class PDF2EXCEL:
         popup_success.transient(self.root)
         popup_success.grab_set()
         popup_success.resizable(False, False)
+        # Adiciona o ícone ao popup
+        if self.icon_image:
+            popup_success.iconphoto(True, self.icon_image)
 
         label = Label(popup_success, text="Processamento concluído com sucesso!", font=("Segoe UI Bold", 10), fg="green")
         label.pack(pady=10)
@@ -831,6 +854,9 @@ class PDF2EXCEL:
         popup_cancel.transient(self.root)
         popup_cancel.grab_set()
         popup_cancel.resizable(False, False)
+        # Adiciona o ícone ao popup
+        if self.icon_image:
+            popup_cancel.iconphoto(True, self.icon_image)
 
         label = Label(popup_cancel, text="Processamento Cancelado!", font=("Segoe UI Bold", 10), fg="red")
         label.pack(pady=10)
@@ -851,6 +877,9 @@ class PDF2EXCEL:
         info_popup.grab_set()
         info_popup.resizable(False, False)
         info_popup.configure(bg="#f0f0f0") # Cor de fundo padrão
+        # Adiciona o ícone ao popup
+        if self.icon_image:
+            info_popup.iconphoto(True, self.icon_image)
 
         # Frame principal para conteúdo
         content_frame = Frame(info_popup, padx=15, pady=15, bg=info_popup.cget("bg"))
@@ -974,6 +1003,9 @@ class PDF2EXCEL:
         config_popup.grab_set()
         config_popup.resizable(False, False)
         config_popup.configure(bg="#f0f0f0")
+        # Adiciona o ícone ao popup
+        if self.icon_image:
+            config_popup.iconphoto(True, self.icon_image)
 
         main_frame = Frame(config_popup, padx=15, pady=15, bg=config_popup.cget("bg"))
         main_frame.pack(fill=BOTH, expand=True)
