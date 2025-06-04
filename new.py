@@ -187,6 +187,8 @@ class AppCelescReporter:
         self.root.title("Extrator de Dados Do Boleto (1.4.0a)")
         font_style = font.Font(family="Segoe UI Bold", size=15)
         self.root.option_add("*Font", font_style)
+        # Define o tamanho fixo da janela principal
+        self.root.geometry("700x650") 
         self.root.resizable(False, False)
 
         # Variáveis de controle de progresso
