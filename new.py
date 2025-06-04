@@ -175,116 +175,131 @@ def extract_info(text):
 
 # Funções globais auxiliares que ainda podem ser chamadas.
 def create_rounded_button(parent, text, command, width=20, height=20):
+    # Definindo o background do canvas para ser o mesmo da janela principal (root)
     canvas = Canvas(parent, width=width, height=height, bd=0, highlightthickness=0, relief='ridge', bg=parent.cget("bg"))
     canvas.create_oval(1, 1, width-2, height-2, outline="#0000FF", fill="#0000FF") # Cor azul para o "i"
     canvas.create_text(width/2, height/2, text=text, fill="#FFFFFF", font=("Segoe UI Bold", int(height/2)))
     canvas.bind("<Button-1>", lambda event: command())
     return canvas
 
-class AppCelescReporter:
+class PDF2EXCEL:
     def __init__(self, root_window):
         self.root = root_window
         self.root.title("Extrator de Dados Do Boleto (1.4.0a)")
-        font_style = font.Font(family="Segoe UI Bold", size=15)
+        self.root.geometry("700x650")
+        self.root.resizable(False, False) # Interface não redimensionável
+        self.root.minsize(700, 50)
+        self.root.config(bg="#f0f0f0") # Define uma cor de fundo consistente para a janela principal
+
+        # Estilo de fonte e tema
+        font_style = font.Font(family="Segoe UI", size=10)
         self.root.option_add("*Font", font_style)
-        # Define o tamanho fixo da janela principal
-        self.root.geometry("700x650") 
-        self.root.resizable(False, False)
-
-        # Variáveis de controle de progresso
-        self.total_pages_to_process = 0 # Total de PDFs a processar (para a barra principal)
-        self.processed_pages_count = 0  # Contador de PDFs processados (para a barra principal)
-        self.input_files = [] # Inicializa input_files da instância
-        self.result_file = "" # Inicializa result_file da instância
-        self.input_dir = "" # Inicializa input_dir da instância
-
-        # Estilo para a barra de progresso
         style = ttk.Style(self.root)
         style.theme_use('clam')
-        style.configure("Default.Horizontal.TProgressbar", troughcolor='white', background='green')
-        style.configure("Success.Horizontal.TProgressbar", troughcolor='white', background='green')
-        style.configure("Error.Horizontal.TProgressbar", troughcolor='white', background='red')
-
-        # Estilo para os botões Iniciar e Cancelar (agora para o botão principal)
-        style.configure("Process.TButton", font=("Segoe UI Bold", 15), background="#4CAF50", foreground="white")
+        style.configure("TButton", padding=6)
+        style.configure("Process.TButton", font=("Segoe UI", 10, "bold"), background="#4CAF50", foreground="white")
         style.map("Process.TButton", background=[('active', '#4CAF50')])
-        style.configure("Cancel.TButton", font=("Segoe UI Bold", 15), background="#FF0000", foreground="white") # Cor vermelha para "Cancelar"
-        style.map("Cancel.TButton", background=[('active', '#FF0000')])
+        style.configure("Cancel.TButton", font=("Segoe UI", 10, "bold"), background="#F44336", foreground="white")
+        style.map("Cancel.TButton", background=[('active', '#F44336')])
+        style.configure("Default.Horizontal.TProgressbar", troughcolor='white', background='green')
+        style.configure("Error.Horizontal.TProgressbar", troughcolor='white', background='red')
+        style.configure("Success.Horizontal.TProgressbar", troughcolor='white', background='green')
 
+        # Obter a cor de fundo do tema para ttk.Frame
+        self.theme_background_color = style.lookup('TFrame', 'background')
 
-        main_frame = ttk.Frame(self.root, padding="20 20 20 20")
+        main_frame = ttk.Frame(self.root, padding="10 10 10 10")
         main_frame.pack(expand=True, fill=tk.BOTH)
 
-        # --- Seção de Seleção de Arquivos ---
-        input_frame = ttk.LabelFrame(main_frame, text="Configurações", padding="10")
-        input_frame.pack(fill=tk.X, pady=5)
-
-        # Selecionar PDFs
-        input_dir_button = ttk.Button(input_frame, text=" Selecionar PDFs ", command=self.select_input_files)
-        input_dir_button.grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.input_dir_label = ttk.Label(input_frame, text="PDF não selecionado", width=45, anchor="w")
-        self.input_dir_label.grid(row=0, column=1, padx=5, pady=5, sticky="w")
-
-        # Local do Resultado
-        result_file_button = ttk.Button(input_frame, text="Local do Resultado", command=self.select_result_file)
-        result_file_button.grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.result_file_label = ttk.Label(input_frame, text="Arquivo não selecionado", width=45, anchor="w")
-        self.result_file_label.grid(row=1, column=1, padx=5, pady=5, sticky="w")
-
-        # CSV ponto e vírgula
+        # Variáveis
+        self.input_files = []
+        self.input_dir = ""
+        self.result_file = ""
         self.save_csv_var = tk.BooleanVar()
-        save_csv_label = ttk.Label(input_frame, text="CSV ponto e vírgula:", cursor="hand2")
-        save_csv_label.grid(row=2, column=0, pady=5, sticky="e")
-        save_csv_label.bind("<Button-1>", lambda event: self.toggle_csv_save())
-        self.save_csv_check = ttk.Checkbutton(input_frame, variable=self.save_csv_var)
-        self.save_csv_check.grid(row=2, column=1, pady=5, sticky="w")
+        self.total_pages_to_process = 0
+        self.processed_pages_count = 0
 
-        # Campo Custas
-        custas_label = ttk.Label(input_frame, text="Custas:", anchor='e', justify='left')
-        custas_label.grid(row=3, column=0, padx=5, pady=5, sticky="e")
-        self.custas_entry = ttk.Entry(input_frame, width=10)
-        self.custas_entry.grid(row=3, column=1, padx=5, pady=5, sticky="w")
+        main_frame = ttk.Frame(self.root, padding=15)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # --- Arquivos dos Boletos em PDF ---
+        # Frame individual para a seleção de arquivos PDF, conforme solicitado.
+        pdf_frame = ttk.LabelFrame(main_frame, text="Arquivos dos Boletos em PDF", padding=10)
+        pdf_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Button(pdf_frame, text="Selecionar os Boletos em PDF", command=self.select_input_files).pack(side=tk.LEFT, padx=5)
+        self.input_dir_label = ttk.Label(pdf_frame, text="Nenhum PDF selecionado", anchor="w")
+        self.input_dir_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # --- Arquivo de Saída do Relatório ---
+        # Frame individual para a seleção do arquivo de saída, conforme solicitado.
+        result_frame = ttk.LabelFrame(main_frame, text="Arquivo de Saida do Relatório", padding=10)
+        result_frame.pack(fill=tk.X, pady=5)
+
+        ttk.Button(result_frame, text="Selecionar a Planilha de Saída", command=self.select_result_file).pack(side=tk.LEFT, padx=5)
+        self.result_file_label = ttk.Label(result_frame, text="Arquivo não selecionado", anchor="w")
+        self.result_file_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        # --- Parâmetros de Extração e Opções (Combinados) ---
+        # Novo frame combinado para "Custas" e "Gerar Relatório em CSV?", conforme solicitado.
+        combined_param_options_frame = ttk.LabelFrame(main_frame, text="Demais Parâmetros e Opções", padding=10)
+        combined_param_options_frame.pack(fill=tk.X, pady=5)
+
+        # Frame interno para agrupar o rótulo de Custas e o campo de entrada,
+        # para que possam ser posicionados juntos ao lado do checkbox.
+        custas_group_frame = ttk.Frame(combined_param_options_frame)
+        custas_group_frame.pack(side=tk.LEFT, padx=(0, 20)) # Adiciona um padding maior à direita para separar do checkbox
+
+        # Rótulo e campo de entrada de Custas
+        ttk.Label(custas_group_frame, text="Ordem de Custas:").pack(side=tk.LEFT, padx=5) # Rótulo alterado
+        self.custas_entry = ttk.Entry(custas_group_frame, width=10)
+        self.custas_entry.pack(side=tk.LEFT, padx=5)
         self.custas_entry.bind("<KeyRelease>", self.limit_custas_entry)
 
-        # --- Seção Log em Tempo Real ---
-        log_frame = ttk.LabelFrame(main_frame, text="Log de Processamento", padding="10")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        # Checkbox para CSV
+        self.save_csv_check = ttk.Checkbutton(combined_param_options_frame, text="Gerar Relatório em CSV?", variable=self.save_csv_var) # Texto do checkbox alterado
+        self.save_csv_check.pack(side=tk.LEFT, padx=10)
 
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=8, state=tk.DISABLED, font=("Segoe UI", 9), bg="white", fg="black")
+        # --- Log de Processamento ---
+        # Frame individual para o log, conforme solicitado.
+        log_frame = ttk.LabelFrame(main_frame, text="Log de Processamento", padding="10")
+        # log_frame.pack(fill=tk.BOTH, expand=True, pady=5) # Antigo: expandia verticalmente
+        log_frame.pack(fill=tk.X, expand=False, pady=5) # Novo: não expande verticalmente, mantendo a altura fixa
+        
+        # Diminui o tamanho da janela de log (altura)
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=10, state=tk.DISABLED)
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        # Configuração das tags de cor para o log
+
         self.log_text.tag_config("INFO", foreground="black")
         self.log_text.tag_config("WARNING", foreground="orange")
         self.log_text.tag_config("ERROR", foreground="red")
-        self.log_text.tag_config("CRITICAL_ERROR", foreground="darkred", font=('TkDefaultFont', 9, 'bold'))
         self.log_text.tag_config("SUCCESS", foreground="green")
-        self.log_text.tag_config("DEBUG", foreground="gray")
-
-        # Adiciona um handler para redirecionar logs do Python para o widget
         self.log_handler = TextLogHandler(self.log_text)
         logger.addHandler(self.log_handler)
 
-        # --- Seção de Ação (Barra de Progresso e Botões de Controle) ---
+        # --- Ações (Barra de Progresso, Status e Botão) ---
+        # Frame individual para as ações, conforme solicitado.
         action_frame = ttk.Frame(main_frame, padding="10")
-        action_frame.pack(fill=tk.X, pady=10)
+        action_frame.pack(fill=tk.X, pady=10) # PACKED LAST
 
-        self.progress_bar = ttk.Progressbar(action_frame, orient="horizontal", length=300, mode="determinate",
-                                            style="Default.Horizontal.TProgressbar")
-        self.progress_bar.pack(pady=5, fill=tk.X)
+        # Barra de Progresso
+        self.progress_bar = ttk.Progressbar(action_frame, mode="determinate", style="Default.Horizontal.TProgressbar")
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=2)
+        self.progress_bar["maximum"] = 100
+        self.progress_bar["value"] = 30 # Valor inicial para demonstração
 
-        self.status_label = ttk.Label(action_frame, text="Aguardando configuração...", font=("Segoe UI", 9, "italic"))
+        # Botão iniciar/cancelar processamento (agora acima do status label)
+        self.process_button = ttk.Button(action_frame, text="Iniciar Processamento", command=self.start_processing, style="Process.TButton")
+        self.process_button.pack(pady=5)
+
+        # Texto de execução atual (agora abaixo do botão de processamento)
+        self.status_label = ttk.Label(action_frame, text="Aguardando configuração...")
         self.status_label.pack(fill=tk.X, pady=5)
 
-        button_row_frame = ttk.Frame(action_frame)
-        button_row_frame.pack(pady=5)
-
-        # O botão principal que alterna entre "Iniciar" e "Cancelar"
-        self.process_button = ttk.Button(button_row_frame, text="             Iniciar Processamento             ", command=self.start_processing, style="Process.TButton")
-        self.process_button.pack(side=tk.LEFT, padx=5) # Centraliza melhor se for o único botão aqui
-
-        # Botão de Informação "i"
-        self.show_info_button_canvas = create_rounded_button(self.root, "i", self.show_info, width=20, height=20)
-        self.show_info_button_canvas.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se")
+        # Botão 'i' (intacto, no canto inferior direito)
+        show_info_button_canvas = create_rounded_button(root, "i", self.show_info, width=20, height=20, bg_color=self.theme_background_color)
+        # Posicionamento do botão de informação no canto inferior direito
+        show_info_button_canvas.place(relx=1.0, rely=1.0, x=-10, y=-10, anchor="se") # x e y negativos para dar uma margem da borda
 
         center_window(self.root)
         self.root.bind("<Return>", lambda event: self.start_processing() if not self.root.grab_current() else "break")
@@ -312,8 +327,8 @@ class AppCelescReporter:
 
     def update_progress_ocr_page(self, pages_processed):
         """Este método não é mais usado para a barra de progresso principal,
-           mas poderia ser usado para um sub-progresso ou detalhe no status label.
-           Por simplicidade, a barra principal agora avança por PDF.
+        mas poderia ser usado para um sub-progresso ou detalhe no status label.
+        Por simplicidade, a barra principal agora avança por PDF.
         """
         # Mantido por compatibilidade, mas não usado para barra principal.
         # A barra de progresso principal é atualizada por PDF em _actual_processing_task.
@@ -326,9 +341,9 @@ class AppCelescReporter:
 
         if state == 'initial': # Estado inicial ou após conclusão/cancelamento
             self.process_button.config(text="             Iniciar Processamento             ",
-                                       command=self.start_processing,
-                                       style="Process.TButton",
-                                       state=tk.NORMAL)
+                                    command=self.start_processing,
+                                    style="Process.TButton",
+                                    state=tk.NORMAL)
             processing = False # Garante que a flag global esteja False
             self.status_label.config(text="Aguardando configuração...")
             self.progress_bar.config(value=0)
@@ -337,16 +352,16 @@ class AppCelescReporter:
 
         elif state == 'processing_start': # Quando o processamento começa
             self.process_button.config(text="             Cancelar Processamento             ",
-                                       command=self.cancel_processing_gui,
-                                       style="Cancel.TButton", # Usar o estilo de cancelamento
-                                       state=tk.NORMAL) # Botão habilitado para permitir o cancelamento
+                                    command=self.cancel_processing_gui,
+                                    style="Cancel.TButton", # Usar o estilo de cancelamento
+                                    state=tk.NORMAL) # Botão habilitado para permitir o cancelamento
             processing = True # Define a flag global para iniciar
 
         elif state == 'cancelling_pending': # Após clicar em cancelar, antes da thread terminar
             self.process_button.config(text="             Cancelando... Aguarde             ",
-                                       command=self.cancel_processing_gui, # Ação ainda é cancelar, mas desabilitado
-                                       style="Cancel.TButton",
-                                       state=tk.DISABLED) # Desabilita para evitar múltiplos cliques
+                                    command=self.cancel_processing_gui, # Ação ainda é cancelar, mas desabilitado
+                                    style="Cancel.TButton",
+                                    state=tk.DISABLED) # Desabilita para evitar múltiplos cliques
             self.status_label.config(text="Cancelando... Por favor, aguarde.")
             self.set_progress_bar_style("Error.Horizontal.TProgressbar")
             processing = False # Sinaliza o cancelamento na flag global
@@ -481,7 +496,7 @@ class AppCelescReporter:
 
                                 ws.append([obs_nome_arquivo, info['cnpj'] if info['cnpj'] != 'N/A' else '', linha_digitavel, valor_formatado, f"Custas{custas_str}:{total_lines_processed:02}"])
                                 dados_extraidos_com_sucesso = True
-                            
+
                             if not dados_extraidos_com_sucesso:
                                 arquivos_com_dados_incompletos.add(nome_sem_extensao)
                                 ws.append([nome_sem_extensao, info['cnpj'] if info['cnpj'] != 'N/A' else '', '', '', f"Custas{custas_str}:{total_lines_processed:02}"])
@@ -545,7 +560,7 @@ class AppCelescReporter:
                                     cell.font = Font(color='000000')
                         except ValueError:
                             pass # Já tratado se o valor não é numérico
-                
+
                 # Salva o arquivo final
                 wb.save(result_file_str)
                 self.log_message(f"Arquivo Excel salvo em: {result_file_str}", "INFO")
@@ -572,7 +587,7 @@ class AppCelescReporter:
             if processing: # Se a flag global ainda é True, significa que terminou com sucesso (não foi cancelado)
                 self.root.after(0, lambda: self.progress_bar.config(value=self.total_pages_to_process, maximum=self.total_pages_to_process))
                 self.root.after(100, lambda: self.status_label.config(text=f"Processamento concluído! Gerando relatório..."))
-            
+
             # Chama a função de finalização na thread principal
             self.root.after(150, lambda: self._processing_complete(
                 error_messages, list(arquivos_com_paginas_a_mais), list(arquivos_com_dados_incompletos)
@@ -595,7 +610,7 @@ class AppCelescReporter:
 
         # Se não foi cancelado, verifica o resultado
         num_erros_reportados = len(error_messages) + len(arquivos_com_paginas_a_mais_list) + len(arquivos_com_dados_incompletos_list)
-        
+
         num_registros_extraidos = 0
         if os.path.exists(self.result_file): # Usa self.result_file
             try:
@@ -624,7 +639,7 @@ class AppCelescReporter:
             self.set_progress_bar_style("Default.Horizontal.TProgressbar")
             self.status_label.config(text="Processamento finalizado.")
             self.log_message("Processamento finalizado em estado indefinido.", "INFO")
-        
+
         # Sempre retorna o botão para o estado inicial após a conclusão (seja sucesso, erro ou sem dados)
         self._update_main_button_state('initial')
 
@@ -652,7 +667,8 @@ class AppCelescReporter:
             title="Salve a planilha de resultados",
         )
         if self.result_file:
-            self.result_file_label.config(text=f"{os.path.basename(self.result_file)}")
+            # Mostra o caminho completo do arquivo de saída
+            self.result_file_label.config(text=f"{self.result_file}")
             self.log_message(f"Arquivo de resultados selecionado: {os.path.basename(self.result_file)}", "INFO")
         else:
             self.result_file = ""
@@ -687,7 +703,7 @@ class AppCelescReporter:
             custas = self.custas_entry.get()
             if not re.match(r'^[0-9\.\:\/\\]{0,5}$', custas):
                 self.log_message(f"Valor de custas inválido: {custas}", "WARNING")
-                messagebox.showerror("Erro", "Digite um valor válido para as custas (apenas números, '.', ':', '/', '\\) com até 5 caracteres.", icon="error")
+                messagebox.showerror("Erro", "Digite um valor válido para as custas (apenas números, '.', ':', '/', '\\') com até 5 caracteres.", icon="error")
                 return
 
             # Atualiza o estado do botão para "Cancelar" e habilita
@@ -718,7 +734,7 @@ class AppCelescReporter:
         popup_div.transient(self.root)
         popup_div.grab_set()
         popup_div.resizable(False, False)
-
+        
         if no_data:
             label = Label(popup_div, text="Processamento concluído! Nenhum dado extraído.", font=("Segoe UI Bold", 10), fg="red")
         else:
@@ -781,8 +797,8 @@ class AppCelescReporter:
 
         if todos_arquivos_para_conferir:
             conferir_pdfs_button = self.create_button(button_frame, "Conferir PDFs",
-                                      command=lambda: [popup_div.destroy(), self.abrir_arquivos_pdf(todos_arquivos_para_conferir), webbrowser.open_new_tab(f"file://{result_file}")],
-                                      fg_color="#0000FF")
+                                    command=lambda: [popup_div.destroy(), self.abrir_arquivos_pdf(todos_arquivos_para_conferir), webbrowser.open_new_tab(f"file://{result_file}")],
+                                    fg_color="#0000FF")
             conferir_pdfs_button.pack(side=LEFT, padx=10)
 
         center_window(popup_div)
@@ -920,7 +936,7 @@ class AppCelescReporter:
                 if isinstance(handler, logging.FileHandler):
                     logger.removeHandler(handler)
                     handler.close()
-            
+
             logging.shutdown()
 
             if os.path.exists(log_file_path):
@@ -933,7 +949,7 @@ class AppCelescReporter:
             else:
                 messagebox.showerror("Erro", "Arquivo de log não encontrado para deletar.", icon="error")
                 self.log_message("Arquivo de log não encontrado para deletar (após tentativa de remoção).", "ERROR")
-                
+
             # Recria o handler de arquivo APÓS deletar e confirmar
             file_handler = logging.FileHandler(log_file_path, mode='w', encoding='utf-8')
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
@@ -984,7 +1000,7 @@ class AppCelescReporter:
                         cnpjs_to_save.append(c)
                     else:
                         has_invalid = True
-            
+
             if has_invalid:
                 if not messagebox.askyesno("CNPJ Inválido", "Um ou mais CNPJs parecem estar em formato inválido. Deseja salvar mesmo assim?", icon="warning", parent=config_popup):
                     return
@@ -999,7 +1015,7 @@ class AppCelescReporter:
             try:
                 if not os.path.exists(filtro_config_path):
                     save_cnpjs_to_config(cnpj_entry_var.get())
-                
+
                 if sys.platform == "win32":
                     os.startfile(filtro_config_path)
                 elif sys.platform == "darwin":
@@ -1060,7 +1076,7 @@ class TextLogHandler(logging.Handler):
 
 if __name__ == "__main__":
     root = tk.Tk()
-    app = AppCelescReporter(root) # Cria a instância da aplicação
+    app = PDF2EXCEL(root) # Cria a instância da aplicação
 
     # Variável global `processing` para ser usada por funções que não são métodos da classe
     # como `ocr_pdf` para permitir o cancelamento.
