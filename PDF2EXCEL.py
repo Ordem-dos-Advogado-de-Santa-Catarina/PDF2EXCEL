@@ -110,22 +110,24 @@ def center_window(window):
     window.geometry(f'+{x}+{y}')
 
 def ocr_pdf(pdf_path, temp_dir):
+    """
+    Realiza OCR em cada página do PDF e retorna uma lista de textos, um para cada página.
+    Também retorna o número total de páginas.
+    """
     try:
         images = convert_from_path(pdf_path, poppler_path=poppler_path, output_folder=temp_dir, paths_only=False, fmt='jpeg')
         num_pages_in_pdf = len(images)
-        text = ""
+        texts_per_page = []
         for image_idx, image in enumerate(images):
             if not processing: # Checa a flag global de cancelamento
                 logger.info(f"Processamento OCR de {os.path.basename(pdf_path)} cancelado na página {image_idx+1}.")
                 break
-            text += pytesseract.image_to_string(image, lang='por')
-            # Não atualiza a barra de progresso por página OCRizada aqui.
-            # A barra de progresso principal agora avança por PDF processado.
-            pass
-        return text, num_pages_in_pdf
+            page_text = pytesseract.image_to_string(image, lang='por')
+            texts_per_page.append(page_text)
+        return texts_per_page, num_pages_in_pdf
     except Exception as e:
         logger.exception(f"Erro ao processar OCR do PDF: {pdf_path}")
-        return None, 0
+        return [], 0 # Retorna lista vazia e 0 páginas em caso de erro
 
 def extract_info(text):
     global ignored_cnpjs_list
@@ -158,11 +160,13 @@ def extract_info(text):
             'tipo': 'guia_custas'
         }
     else:
+        # A linha abaixo remove padrões como "123-4" que podem confundir o OCR em linhas digitáveis.
         text = re.sub(r'\d{3}-\d', '', text)
         for line in text.splitlines():
-            cleaned_line = re.sub(r'[^0-9]', '', line)
-            if 47 <= len(cleaned_line) <= 48:
+            cleaned_line = re.sub(r'[^0-9]', '', line) # Remove tudo que não é número
+            if 47 <= len(cleaned_line) <= 48: # Procura por linhas de 47 ou 48 dígitos
                 linhas_digitaveis.append(cleaned_line)
+                # Extrai o valor monetário dos últimos 10 dígitos (considerando os 2 decimais)
                 valor_monetario = f"{cleaned_line[-10:-2]},{cleaned_line[-2:]}"
                 valores_monetarios.append(valor_monetario)
         return {
@@ -302,7 +306,7 @@ class PDF2EXCEL:
         self.progress_bar = ttk.Progressbar(action_frame, mode="determinate", style="Default.Horizontal.TProgressbar")
         self.progress_bar.pack(fill=tk.X, padx=5, pady=2)
         self.progress_bar["maximum"] = 100
-        self.progress_bar["value"] = 30 # Valor inicial para demonstração
+        self.progress_bar["value"] = 0 # Valor inicial para demonstração (alterado para 0)
 
         # Botão iniciar/cancelar processamento (agora acima do status label)
         self.process_button = ttk.Button(action_frame, text="Iniciar Processamento", command=self.start_processing, style="Process.TButton")
@@ -397,7 +401,7 @@ class PDF2EXCEL:
         error_messages = []
         arquivos_com_paginas_a_mais = set()
         arquivos_com_dados_incompletos = set()
-        linhas_digitaveis_processadas = set() # Inicializado por execução da thread
+        linhas_digitaveis_processadas = set() # Inicializado por execução da thread para evitar duplicatas entre PDFs
 
         temp_dir_obj = tempfile.TemporaryDirectory()
         temp_dir = temp_dir_obj.name
@@ -406,6 +410,7 @@ class PDF2EXCEL:
         try:
             wb = None
             ws = None
+            custas_seq_counter = 0 # NOVO: Contador sequencial para a coluna "Nome do Titulo"
 
             if not os.path.exists(result_file_str):
                 wb = Workbook()
@@ -414,12 +419,30 @@ class PDF2EXCEL:
                 ws.append(['Obeservação', 'Fornecedor', 'Código de Barras', 'Valor', 'Nome do Titulo'])
                 ws.freeze_panes = 'A2' # Congela a primeira linha (cabeçalho)
                 self.log_message("Novo arquivo Excel criado para resultados.", "INFO")
+                # custas_seq_counter já é 0, será incrementado para 1 no primeiro dado
             else:
                 try:
                     wb = openpyxl.load_workbook(result_file_str)
                     ws = wb.active
                     ws.freeze_panes = 'A2' # Garante o congelamento da primeira linha ao abrir
                     self.log_message(f"Arquivo Excel existente carregado: {result_file_str}", "INFO")
+                    # Se o arquivo existe, tentar encontrar o último número da sequência de "Custas"
+                    if ws.max_row > 1: # Se tiver mais que o cabeçalho
+                        max_existing_custas_num = 0
+                        for row_idx in range(2, ws.max_row + 1): # Começa da linha 2 (ignora o cabeçalho)
+                            cell_value = ws.cell(row=row_idx, column=5).value # Coluna 'Nome do Titulo'
+                            if isinstance(cell_value, str):
+                                match = re.search(r':(\d+)$', cell_value) # Procura o número após o ':' no final
+                                if match:
+                                    try:
+                                        num = int(match.group(1))
+                                        if num > max_existing_custas_num:
+                                            max_existing_custas_num = num
+                                    except ValueError:
+                                        pass # Ignorar valores não numéricos se o regex casar
+                        custas_seq_counter = max_existing_custas_num
+                        self.log_message(f"Contador de custas reiniciado de {custas_seq_counter} (baseado em arquivo existente).", "DEBUG")
+
                 except Exception as e:
                     self.log_message(f"Erro ao abrir arquivo Excel existente: {result_file_str} - {e}", "ERROR")
                     messagebox.showerror("Erro", f"Não foi possível abrir o arquivo Excel: {e}", icon="error")
@@ -429,74 +452,103 @@ class PDF2EXCEL:
             self.processed_pages_count = 0 # Reinicia o contador para a nova execução
 
             for pdf_path in input_files_list:
-                if not processing: # Checa a flag global de cancelamento
+                if not processing: # Checa a flag global de cancelamento para o PDF
                     self.log_message("Processamento cancelado antes de concluir todos os PDFs.", "INFO")
                     break
 
                 n_processo = os.path.basename(pdf_path)
+                base_name_for_excel = os.path.splitext(n_processo)[0]
+
                 if not n_processo.lower().endswith('.pdf'):
                     self.log_message(f"Pulando arquivo não PDF: {n_processo}", "INFO")
+                    # Atualiza o progresso mesmo para arquivos pulados para não travar a barra
+                    self.processed_pages_count += 1
+                    self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.progress_bar.config(value=count))
+                    self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.status_label.config(text=f"Processando documento {count}/{total}: {name}"))
+                    self.root.update_idletasks()
                     continue
 
                 self.log_message(f"Processando documento: {n_processo}", "INFO")
-                # Atualiza o status label e barra de progresso para indicar o início do arquivo
                 self.root.after(0, lambda p=n_processo: self.status_label.config(text=f"Processando: {p}"))
                 self.root.update_idletasks() # Força a atualização da GUI
 
-                ocr_text, num_pages_in_current_pdf = ocr_pdf(pdf_path, temp_dir)
+                # Altera a chamada para ocr_pdf para obter textos por página e o número de páginas
+                texts_per_page, num_pages_in_current_pdf = ocr_pdf(pdf_path, temp_dir)
 
                 if not processing: # Checa a flag global de cancelamento novamente após OCR
                     self.log_message(f"Processamento de {n_processo} cancelado durante o OCR.", "INFO")
                     break
 
-                self.processed_pages_count += 1 # Conta como 1 PDF processado para a barra
-                self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.progress_bar.config(value=count)) # Atualiza a barra por documento
-                self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.status_label.config(text=f"Processando documento {count}/{total}: {name}"))
-                self.root.update_idletasks() # Força a atualização da GUI
+                # Caso o OCR falhe ou o PDF esteja vazio/inválido
+                if num_pages_in_current_pdf == 0 or not texts_per_page:
+                    error_messages.append(f"Arquivo {n_processo}: Falha no processamento do OCR ou PDF vazio.")
+                    arquivos_com_dados_incompletos.add(base_name_for_excel) # Adiciona à lista de incompletos
+                    
+                    custas_seq_counter += 1 # Incrementa o contador mesmo para linhas sem dados
+                    ws.append([base_name_for_excel, '', '', '', f"Custas{custas_str}:{custas_seq_counter:02}"]) # Adiciona linha para o PDF
+                    
+                    for cell in ws[ws.max_row]: # Pinta de amarelo
+                        cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+                        cell.font = Font(color='000000')
+                    self.log_message(f"Arquivo {n_processo}: Falha no processamento do OCR ou PDF vazio.", "ERROR")
+                    # Atualiza progresso e continua para o próximo PDF
+                    self.processed_pages_count += 1
+                    self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.progress_bar.config(value=count))
+                    self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.status_label.config(text=f"Processando documento {count}/{total}: {name}"))
+                    self.root.update_idletasks()
+                    continue # Pula para o próximo PDF na lista
 
-                total_lines_processed = ws.max_row # Pega o número de linhas existentes no Excel
+                # Adiciona à lista de arquivos com mais de uma página se aplicável
+                if num_pages_in_current_pdf > 1:
+                    arquivos_com_paginas_a_mais.add(base_name_for_excel)
+                    self.log_message(f"Arquivo {n_processo}: Possui {num_pages_in_current_pdf} páginas.", "WARNING")
 
-                if ocr_text:
-                    info = extract_info(ocr_text)
-                    nome_sem_extensao = os.path.splitext(n_processo)[0]
+                pdf_extracted_any_data = False # Flag para verificar se algum dado foi extraído deste PDF
+
+                # Itera sobre o texto de cada página
+                for page_idx, page_text in enumerate(texts_per_page):
+                    if not processing: # Checa cancelamento entre páginas
+                        self.log_message(f"Processamento de {n_processo} cancelado na página {page_idx+1}.", "INFO")
+                        break # Sai do loop de páginas
+
+                    info = extract_info(page_text)
+                    
+                    # Define o nome da observação na planilha, adicionando o número da página se for multi-página
+                    excel_obs_name = base_name_for_excel
+                    if num_pages_in_current_pdf > 1:
+                        excel_obs_name = f"{base_name_for_excel} - Página {page_idx + 1}"
+
+                    row_needs_yellow_due_to_data_issue = False # Flag para problemas de dados nesta linha/página
 
                     if not any(info.values()) and info['cnpj'] == 'N/A' and not info['linhas_digitaveis']:
-                        arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                        ws.append([nome_sem_extensao, '', '', '', f"Custas{custas_str}:{total_lines_processed:02}"])
-                        for cell in ws[ws.max_row]:
-                            cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                            cell.font = Font(color='000000')
-                        error_messages.append(f"Arquivo {n_processo}: Nenhuma informação encontrada.")
-                        self.log_message(f"Arquivo {n_processo}: Nenhuma informação encontrada.", "WARNING")
+                        row_needs_yellow_due_to_data_issue = True
+                        self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Nenhuma informação encontrada.", "WARNING")
+                        custas_seq_counter += 1 # Incrementa o contador
+                        ws.append([excel_obs_name, '', '', '', f"Custas{custas_str}:{custas_seq_counter:02}"])
                     elif info['tipo'] == 'guia_custas':
+                        custas_seq_counter += 1 # Incrementa o contador
                         if info['cnpj'] != 'N/A' and info['numero_guia'] and info['valor']:
-                            ws.append([nome_sem_extensao, info['cnpj'], info['numero_guia'], info['valor'], f"Custas{custas_str}:{total_lines_processed:02}"])
-                            self.log_message(f"Arquivo {n_processo}: Guia de Custas processada com sucesso.", "INFO")
+                            ws.append([excel_obs_name, info['cnpj'], info['numero_guia'], info['valor'], f"Custas{custas_str}:{custas_seq_counter:02}"])
+                            self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Guia de Custas processada com sucesso.", "INFO")
+                            pdf_extracted_any_data = True
                         else:
-                            arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                            ws.append([nome_sem_extensao, info['cnpj'] if info['cnpj'] else '', info['numero_guia'] if info['numero_guia'] else '', info['valor'] if info['valor'] else '', f"Custas{custas_str}:{total_lines_processed:02}"])
-                            for cell in ws[ws.max_row]:
-                                cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                                cell.font = Font(color='000000')
-                            error_messages.append(f"Arquivo {n_processo}: Guia de Custas com dados incompletos.")
-                            self.log_message(f"Arquivo {n_processo}: Guia de Custas com dados incompletos.", "WARNING")
+                            row_needs_yellow_due_to_data_issue = True
+                            ws.append([excel_obs_name, info['cnpj'] if info['cnpj'] else '', info['numero_guia'] if info['numero_guia'] else '', info['valor'] if info['valor'] else '', f"Custas{custas_str}:{custas_seq_counter:02}"])
+                            self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Guia de Custas com dados incompletos.", "WARNING")
                     else: # Tipo boleto
                         num_linhas_digitaveis = len(info['linhas_digitaveis'])
                         if num_linhas_digitaveis == 0:
-                            arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                            ws.append([nome_sem_extensao, info['cnpj'] if info['cnpj'] != 'N/A' else '', '', '', f"Custas{custas_str}:{total_lines_processed:02}"])
-                            for cell in ws[ws.max_row]:
-                                cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                                cell.font = Font(color='000000')
-                            error_messages.append(f"Arquivo {n_processo}: Nenhuma linha digitável encontrada.")
-                            self.log_message(f"Arquivo {n_processo}: Nenhuma linha digitável encontrada.", "WARNING")
+                            row_needs_yellow_due_to_data_issue = True
+                            custas_seq_counter += 1 # Incrementa o contador
+                            ws.append([excel_obs_name, info['cnpj'] if info['cnpj'] != 'N/A' else '', '', '', f"Custas{custas_str}:{custas_seq_counter:02}"])
+                            self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Nenhuma linha digitável encontrada.", "WARNING")
                         else:
-                            dados_extraidos_com_sucesso = False
+                            page_extracted_any_data = False # Flag para esta página
                             for i in range(num_linhas_digitaveis):
                                 linha_digitavel = info['linhas_digitaveis'][i]
                                 valor_monetario = info['valores'][i]
                                 if linha_digitavel in linhas_digitaveis_processadas:
-                                    self.log_message(f"Linha digitável duplicada encontrada para {n_processo}: {linha_digitavel}", "DEBUG")
+                                    self.log_message(f"Linha digitável duplicada encontrada para {n_processo}, Página {page_idx+1}: {linha_digitavel}", "DEBUG")
                                     continue
                                 linhas_digitaveis_processadas.add(linha_digitavel)
                                 try:
@@ -504,92 +556,101 @@ class PDF2EXCEL:
                                     valor_formatado = "{:,.2f}".format(valor_float).replace(',', '*').replace('.', ',').replace('*', '.')
                                 except ValueError:
                                     valor_formatado = valor_monetario
-                                    error_messages.append(f"Arquivo {n_processo}: Valor monetário inválido '{valor_monetario}' na linha digitável '{linha_digitavel}'.")
-                                    self.log_message(f"Arquivo {n_processo}: Valor monetário inválido '{valor_monetario}'.", "WARNING")
+                                    error_messages.append(f"Arquivo {n_processo}, Página {page_idx+1}: Valor monetário inválido '{valor_monetario}' na linha digitável '{linha_digitavel}'.")
+                                    self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Valor monetário inválido '{valor_monetario}'.", "WARNING")
+                                    row_needs_yellow_due_to_data_issue = True
 
-                                obs_nome_arquivo = nome_sem_extensao
-                                if i > 0:
-                                    obs_nome_arquivo = f"{nome_sem_extensao} - Boleto página {i + 1}"
+                                # Adapta a observação para múltiplas linhas digitáveis na mesma página
+                                obs_for_row = excel_obs_name
+                                if num_linhas_digitaveis > 1:
+                                    obs_for_row = f"{excel_obs_name} (Linha {i + 1})"
+                                
+                                custas_seq_counter += 1 # Incrementa para cada linha digitável
+                                ws.append([obs_for_row, info['cnpj'] if info['cnpj'] != 'N/A' else '', linha_digitavel, valor_formatado, f"Custas{custas_str}:{custas_seq_counter:02}"])
+                                page_extracted_any_data = True
+                                pdf_extracted_any_data = True
 
-                                ws.append([obs_nome_arquivo, info['cnpj'] if info['cnpj'] != 'N/A' else '', linha_digitavel, valor_formatado, f"Custas{custas_str}:{total_lines_processed:02}"])
-                                dados_extraidos_com_sucesso = True
+                            if not page_extracted_any_data: # Se não extraiu nenhuma linha válida/nova desta página
+                                row_needs_yellow_due_to_data_issue = True
+                                custas_seq_counter += 1 # Incrementa mesmo se não extraiu linha válida
+                                ws.append([excel_obs_name, info['cnpj'] if info['cnpj'] != 'N/A' else '', '', '', f"Custas{custas_str}:{custas_seq_counter:02}"])
+                                self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: Nenhuma linha digitável válida/nova encontrada.", "WARNING")
 
-                            if not dados_extraidos_com_sucesso:
-                                arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                                ws.append([nome_sem_extensao, info['cnpj'] if info['cnpj'] != 'N/A' else '', '', '', f"Custas{custas_str}:{total_lines_processed:02}"])
-                                for cell in ws[ws.max_row]:
-                                    cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                                    cell.font = Font(color='000000')
-                                error_messages.append(f"Arquivo {n_processo}: Nenhuma linha digitável válida/nova encontrada.")
-                                self.log_message(f"Arquivo {n_processo}: Nenhuma linha digitável válida/nova encontrada.", "WARNING")
+                    if info['cnpj'] == 'N/A':
+                        arquivos_com_dados_incompletos.add(base_name_for_excel)
+                        row_needs_yellow_due_to_data_issue = True
+                        error_messages.append(f"Arquivo {n_processo}, Página {page_idx+1}: CNPJ não encontrado ou ignorado.")
+                        self.log_message(f"Arquivo {n_processo}, Página {page_idx+1}: CNPJ não encontrado ou ignorado.", "WARNING")
 
-                        if info['cnpj'] == 'N/A' and num_linhas_digitaveis > 0:
-                            arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                            for cell in ws[ws.max_row]:
-                                    cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                                    cell.font = Font(color='000000')
-                            error_messages.append(f"Arquivo {n_processo}: CNPJ não encontrado ou ignorado.")
-                            self.log_message(f"Arquivo {n_processo}: CNPJ não encontrado ou ignorado.", "WARNING")
+                    # Aplica a cor amarela às linhas recém-adicionadas desta página
+                    # Se houver problema de dados OU se o PDF tiver múltiplas páginas
+                    if row_needs_yellow_due_to_data_issue or num_pages_in_current_pdf > 1:
+                        # Itera sobre as linhas adicionadas para esta página
+                        # A partir da linha que acabou de ser adicionada (ws.max_row) até a linha anterior,
+                        # dependendo de quantas linhas foram adicionadas para esta página.
+                        # Para simplificar, aplicaremos à última linha adicionada por esta iteração de página.
+                        # NOTA: Se uma página gerar múltiplas linhas (ex: 2 linhas digitáveis),
+                        # a última linha adicionada é ws.max_row. Para colorir todas as linhas
+                        # geradas por uma única página, precisaríamos saber o ws.max_row ANTES e DEPOIS.
+                        # O comportamento atual é colorir a(s) última(s) linha(s) adicionada(s) por essa "ação".
+                        for cell in ws[ws.max_row]: 
+                            cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+                            cell.font = Font(color='000000')
 
-                    for col in range(1, ws.max_column + 1):
-                        column_letter = openpyxl.utils.get_column_letter(col)
-                        column_width = max(len(str(cell.value)) if cell.value else 0 for cell in ws[column_letter]) + 2
-                        ws.column_dimensions[column_letter].width = max(column_width, 10)
+                # Após processar todas as páginas do PDF atual, verifica se algum dado foi extraído.
+                if not pdf_extracted_any_data:
+                    arquivos_com_dados_incompletos.add(base_name_for_excel)
 
-                    if num_pages_in_current_pdf > 1:
-                        arquivos_com_paginas_a_mais.add(nome_sem_extensao)
-                        self.log_message(f"Arquivo {n_processo}: Possui mais de uma página.", "WARNING")
-                else:
-                    error_messages.append(f"Arquivo {n_processo}: Falha no processamento do OCR.")
-                    arquivos_com_dados_incompletos.add(nome_sem_extensao)
-                    ws.append([nome_sem_extensao, '', '', '', f"Custas{custas_str}:{total_lines_processed:02}"])
-                    for cell in ws[ws.max_row]:
-                        cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                        cell.font = Font(color='000000')
-                    self.log_message(f"Arquivo {n_processo}: Falha no processamento do OCR.", "ERROR")
+                # Atualiza a barra de progresso e o status label por PDF processado
+                self.processed_pages_count += 1
+                self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.progress_bar.config(value=count))
+                self.root.after(0, lambda count=self.processed_pages_count, total=self.total_pages_to_process, name=n_processo: self.status_label.config(text=f"Processando documento {count}/{total}: {name}"))
+                self.root.update_idletasks()
 
-            if processing: # Se não foi cancelado durante o loop principal
-                for row_idx in range(2, ws.max_row + 1):
-                    nome_arquivo_celula = ws.cell(row_idx, 1).value
-                    if isinstance(nome_arquivo_celula, str):
-                        nome_base_arquivo = nome_arquivo_celula.split(" - Boleto página ")[0]
-                        if nome_base_arquivo in arquivos_com_dados_incompletos:
+            # --- Formatação e Verificações Finais na Planilha ---
+            # Ajusta a largura das colunas
+            for col in range(1, ws.max_column + 1):
+                column_letter = openpyxl.utils.get_column_letter(col)
+                # Calcula a largura máxima baseada no conteúdo, com um mínimo de 10
+                column_width = max(len(str(cell.value)) if cell.value else 0 for cell in ws[column_letter]) + 2
+                ws.column_dimensions[column_letter].width = max(column_width, 10)
+
+            # Formata a coluna "Valor" como moeda e alinha à direita
+            for cell in ws['D']:
+                cell.number_format = 'R$ #,##0.00'
+                cell.alignment = Alignment(horizontal='right')
+            ws['D1'].alignment = Alignment(horizontal='left') # Garante que o cabeçalho não alinhe à direita
+
+            # Verifica valores de boleto acima de R$ 2000
+            for row_idx in range(2, ws.max_row + 1): # Começa da linha 2 (após o cabeçalho)
+                valor_boleto_cell = ws.cell(row_idx, 4)
+                valor_boleto = valor_boleto_cell.value
+                if valor_boleto and isinstance(valor_boleto, str):
+                    try:
+                        # Remove pontos e substitui vírgula por ponto para conversão para float
+                        valor_boleto_float = float(valor_boleto.replace('.', '').replace(',', '.'))
+                        if valor_boleto_float > 2000:
+                            # Adiciona mensagem de erro e pinta a linha de amarelo
+                            error_messages.append(f"Arquivo {ws.cell(row_idx, 1).value}: Valor do boleto (R$ {valor_boleto}) acima de R$ 2000. Verificar manual.")
+                            self.log_message(f"Arquivo {ws.cell(row_idx, 1).value}: Valor do boleto (R$ {valor_boleto}) acima de R$ 2000. Verificar manual.", "WARNING")
                             for cell in ws[row_idx]:
                                 cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
                                 cell.font = Font(color='000000')
+                    except ValueError:
+                        pass # Erros de valor inválido já são tratados no loop de extração
 
-                for cell in ws['D']:
-                    cell.number_format = 'R$ #,##0.00'
-                    cell.alignment = Alignment(horizontal='right')
-                ws['D1'].alignment = Alignment(horizontal='left')
+            # Salva o arquivo final
+            wb.save(result_file_str)
+            self.log_message(f"Arquivo Excel salvo em: {result_file_str}", "INFO")
 
-                for row_idx in range(2, ws.max_row + 1):
-                    valor_boleto_cell = ws.cell(row_idx, 4)
-                    valor_boleto = valor_boleto_cell.value
-                    if valor_boleto and isinstance(valor_boleto, str):
-                        try:
-                            valor_boleto_float = float(valor_boleto.replace('.', '').replace(',', '.'))
-                            if valor_boleto_float > 2000:
-                                error_messages.append(f"Arquivo {ws.cell(row_idx, 1).value}: Valor do boleto (R$ {valor_boleto}) acima de R$ 2000. Verificar manual.")
-                                self.log_message(f"Arquivo {ws.cell(row_idx, 1).value}: Valor do boleto (R$ {valor_boleto}) acima de R$ 2000. Verificar manual.", "WARNING")
-                                for cell in ws[row_idx]:
-                                    cell.fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
-                                    cell.font = Font(color='000000')
-                        except ValueError:
-                            pass # Já tratado se o valor não é numérico
+            num_erros_reportados = len(error_messages) + len(arquivos_com_paginas_a_mais) + len(arquivos_com_dados_incompletos)
+            num_registros_extraidos = ws.max_row - 1
 
-                # Salva o arquivo final
-                wb.save(result_file_str)
-                self.log_message(f"Arquivo Excel salvo em: {result_file_str}", "INFO")
-
-                num_erros_reportados = len(error_messages) + len(arquivos_com_paginas_a_mais) + len(arquivos_com_dados_incompletos)
-                num_registros_extraidos = ws.max_row - 1
-
-                if save_csv_bool and num_erros_reportados == 0 and num_registros_extraidos > 0:
-                    self.save_to_csv_method(result_file_str, ws) # Chama o método da classe
-                    self.log_message(f"Arquivo CSV salvo em: {os.path.splitext(result_file_str)[0] + '.csv'}", "INFO")
-                elif save_csv_bool:
-                    self.log_message("CSV automático não criado devido a divergências ou falta de dados.", "WARNING")
+            if save_csv_bool and num_erros_reportados == 0 and num_registros_extraidos > 0:
+                self.save_to_csv_method(result_file_str, ws) # Chama o método da classe
+                self.log_message(f"Arquivo CSV salvo em: {os.path.splitext(result_file_str)[0] + '.csv'}", "INFO")
+            elif save_csv_bool:
+                self.log_message("CSV automático não criado devido a divergências ou falta de dados.", "WARNING")
 
         except Exception as e:
             logger.exception("Erro crítico durante o processamento dos PDFs na thread")
@@ -920,7 +981,10 @@ class PDF2EXCEL:
             return
 
         for nome_base in arquivos_nomes_base:
-            caminho_completo = next((f for f in self.input_files if os.path.splitext(os.path.basename(f))[0] == nome_base), None)
+            # Precisa remover o sufixo " - Página X" para encontrar o PDF original
+            original_base_name = nome_base.split(" - Página ")[0]
+            
+            caminho_completo = next((f for f in self.input_files if os.path.splitext(os.path.basename(f))[0] == original_base_name), None)
             if caminho_completo:
                 try:
                     webbrowser.open_new_tab(f"file://{caminho_completo}")
@@ -928,7 +992,7 @@ class PDF2EXCEL:
                 except Exception as e:
                     self.log_message(f"Erro ao tentar abrir PDF {caminho_completo}: {e}", "ERROR")
             else:
-                self.log_message(f"Arquivo PDF com nome base '{nome_base}' não encontrado na lista de input_files.", "WARNING")
+                self.log_message(f"Arquivo PDF com nome base '{original_base_name}' (original de '{nome_base}') não encontrado na lista de input_files.", "WARNING")
         if arquivos_abertos == 0 and arquivos_nomes_base:
             messagebox.showwarning("Aviso", "Não foi possível localizar os arquivos PDF para abrir. Verifique se foram movidos ou renomeados.", icon="warning")
 
