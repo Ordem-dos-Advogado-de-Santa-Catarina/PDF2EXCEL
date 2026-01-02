@@ -1,37 +1,65 @@
-# 🧾 Extrator de Informações Específicas em Boletos Não Pesquisáveis
+# Extrator de Boletos & Custas (OCR)
 
-Este programa em Python realiza a extração automática de informações específicas (como valor, CNPJ e linha digitável) de boletos bancários em PDF que **não são pesquisáveis**, ou seja, cujo conteúdo é armazenado como imagem. Utiliza OCR para reconhecer o texto e organiza os dados em uma planilha Excel para facilitar o tratamento posterior.
+Ferramenta desktop para extração em lote de dados de boletos bancários e guias de custas judiciais em formato PDF (imagem/scanned). Utiliza OCR (Tesseract) para converter o conteúdo visual em dados estruturados, gerando relatórios em Excel e CSV.
 
-## 📌 Funcionalidades
+O sistema ignora automaticamente CNPJs configurados em *blacklist* e valida integridade de linhas digitáveis.
 
-- Realiza OCR em arquivos PDF de boletos (mesmo sem texto selecionável).
-- Extrai as seguintes informações:
-  - **Nome do arquivo**
-  - **Valor do boleto**
-  - **CNPJ do beneficiado**
-  - **Linha digitável**
-- Gera uma planilha `.xlsx` com os dados extraídos.
-- Cria opcionalmente um arquivo `.csv` separado por ponto e vírgula.
-- Interface gráfica amigável (Tkinter).
-- Permite configurar CNPJs a serem ignorados.
-- Identifica guias de custas e boletos com múltiplas páginas.
+## Funcionalidades
 
-> Essas pastas podem ser ajustadas conforme necessário na interface gráfica do programa.
+- **OCR em Lote:** Processamento de múltiplos arquivos PDF simultaneamente.
+- **Extração de Dados:**
+  - Linha Digitável (Código de Barras)
+  - Valor Monetário
+  - CNPJ do Beneficiário
+  - Número da Guia (para Guias de Custas)
+- **Filtros:** Ignora CNPJs específicos configuráveis via interface (ex: OAB).
+- **Validação:** Alerta visual para valores acima de R$ 2.000,00 ou falhas de leitura.
+- **Output:** Gera planilha `.xlsx` formatada e opcionalmente um arquivo `.csv` (separador ponto e vírgula).
+- **Logs:** Sistema de log detalhado para debug (`%APPDATA%/PDF2EXCEL`).
 
-## ⚙️ Tecnologias Utilizadas
+## Dependências do Sistema
 
-- `Python 3`
-- `pytesseract` — Para OCR (reconhecimento de texto)
-- `pdf2image` — Conversão de PDFs para imagens
-- `openpyxl` — Geração de planilhas Excel
-- `tkinter` — Interface gráfica
-- `poppler` — Utilitário necessário para `pdf2image`
+Para execução do código fonte ou do executável, as seguintes ferramentas devem estar instaladas no Windows:
 
-## ✅ Requisitos
+1. **Tesseract OCR:**
+   - Caminho padrão esperado: `C:\Program Files\Tesseract-OCR\tesseract.exe`
+2. **Poppler (para pdf2image):**
+   - Caminho padrão esperado: `C:\Program Files\poppler\bin`
 
-- Python 3 instalado.
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) instalado:
-  - Caminho padrão: `C:\Program Files\Tesseract-OCR\tesseract.exe`
-- [Poppler](http://blog.alivate.com.au/poppler-windows/) instalado:
-  - Caminho padrão: `C:\Program Files\poppler\bin`
-- Instale as bibliotecas Python necessárias com:
+> Caso utilize a versão compilada (.exe), o Poppler geralmente é empacotado junto, mas o Tesseract deve estar instalado na máquina host.
+
+## Instalação (Source)
+
+```bash
+pip install -r requirements.txt
+```
+
+**Bibliotecas principais:**
+- `pytesseract`
+- `pdf2image`
+- `openpyxl`
+- `Pillow`
+- `tkinter` (bult-in)
+
+## Estrutura de Pastas
+
+```text
+📂 PDF2EXCEL
+├── 📄 main.py               # Código fonte principal
+├── 📄 correios_icon.ico     # Ícone da aplicação
+├── 📂 logs                  # (Gerado em %APPDATA%)
+│   ├── 📄 PDF2EXCEL.log
+│   └── 📄 Filtro.config     # Lista de CNPJs ignorados
+└── 📂 output                # Local selecionado pelo usuário para salvar relatórios
+```
+
+## Utilização
+
+1. Execute o script/aplicação.
+2. **Selecionar PDFs:** Escolha os arquivos ou a pasta contendo os boletos.
+3. **Planilha de Saída:** Defina o nome e local do arquivo Excel.
+4. **Parâmetros:**
+   - *Ordem de Custas:* Identificador sequencial para organização interna.
+   - *CSV:* Marque se desejar uma cópia em texto simples.
+5. **Configuração de Filtro:**
+   - Clique no botão "i" (Informações) -> "Filtro" para adicionar/remover CNPJs da blacklist.
